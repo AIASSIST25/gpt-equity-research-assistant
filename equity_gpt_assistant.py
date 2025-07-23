@@ -11,6 +11,7 @@ import os
 
 # Load environment variables
 load_dotenv()
+FMP_API_KEY = "ds6lNQx3yC9qUEGFr69silY24hligX"
 
 def query_gpt(prompt):
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -32,6 +33,13 @@ You are an equity research analyst. Based on the company summary below, answer:
 Company Summary:
 {summary_text}
 """
+
+def get_company_summary(ticker):
+    url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={FMP_API_KEY}"
+    response = requests.get(url)
+    if response.status_code == 200 and response.json():
+        return response.json()[0].get("description", "No summary available.")
+    return "No summary available."
 
 def build_financial_prompt(financial_df):
     return f"""
@@ -62,10 +70,6 @@ Free Cash Flows:
 {fcf_data.to_string()}
 """
 
-def get_company_summary(ticker):
-    yf_ticker = yf.Ticker(ticker)
-    return yf_ticker.info.get('longBusinessSummary', 'No summary available.')
-
 def get_financials(ticker):
     t = yf.Ticker(ticker)
     income = t.financials
@@ -73,7 +77,6 @@ def get_financials(ticker):
     cashflow = t.cashflow
     dividends = t.dividends
 
-    # Safely access rows with fallback if missing
     operating_cf = cashflow.loc['Total Cash From Operating Activities'] if 'Total Cash From Operating Activities' in cashflow.index else pd.Series([0]*4)
     capex = cashflow.loc['Capital Expenditures'] if 'Capital Expenditures' in cashflow.index else pd.Series([0]*4)
     fcf = operating_cf - capex
@@ -123,7 +126,7 @@ def scrape_10k_summary(ticker):
     filing = requests.get(doc_url).text
     soup = BeautifulSoup(filing, 'html.parser')
     text = soup.get_text()
-    return query_gpt(f"Summarize this 10-K filing:\n{text[:10000]}")  # Limit to first 10,000 characters
+    return query_gpt(f"Summarize this 10-K filing:\n{text[:10000]}")
 
 def export_to_excel(business_analysis, financial_analysis, fin_df, dcf_result, ticker):
     with pd.ExcelWriter(f"{ticker}_equity_report.xlsx") as writer:
