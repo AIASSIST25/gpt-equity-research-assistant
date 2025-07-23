@@ -1,20 +1,24 @@
 # equity_gpt_assistant.py
 import yfinance as yf
-import openai
+from openai import OpenAI
 import pandas as pd
 import streamlit as st
 import requests
 from bs4 import BeautifulSoup
 import openpyxl
+from dotenv import load_dotenv
+import os
 
-openai.api_key = "YOUR_OPENAI_API_KEY"
+# Load environment variables
+load_dotenv()
 
 def query_gpt(prompt):
-    response = openai.ChatCompletion.create(
-        model="gpt-4",
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    response = client.chat.completions.create(
+        model="gpt-4o",
         messages=[{"role": "user", "content": prompt}]
     )
-    return response['choices'][0]['message']['content']
+    return response.choices[0].message.content
 
 def build_business_prompt(summary_text):
     return f"""
@@ -45,6 +49,19 @@ Financials:
 {financial_df.to_string()}
 """
 
+def build_dcf_prompt(fcf_data, wacc, terminal_growth):
+    return f"""
+You're performing a DCF valuation.
+
+Use the following Free Cash Flows, WACC of {wacc}%, and terminal growth rate of {terminal_growth}% to calculate:
+1. Enterprise value
+2. Equity value
+3. Implied share price
+
+Free Cash Flows:
+{fcf_data.to_string()}
+"""
+
 def get_company_summary(ticker):
     yf_ticker = yf.Ticker(ticker)
     return yf_ticker.info.get('longBusinessSummary', 'No summary available.')
@@ -55,7 +72,13 @@ def get_financials(ticker):
     balance = t.balance_sheet
     cashflow = t.cashflow
     dividends = t.dividends
-    return income, balance, cashflow, dividends
+
+    # Safely access rows with fallback if missing
+    operating_cf = cashflow.loc['Total Cash From Operating Activities'] if 'Total Cash From Operating Activities' in cashflow.index else pd.Series([0]*4)
+    capex = cashflow.loc['Capital Expenditures'] if 'Capital Expenditures' in cashflow.index else pd.Series([0]*4)
+    fcf = operating_cf - capex
+
+    return income, balance, cashflow, dividends, fcf
 
 def run_business_analysis(ticker):
     summary = get_company_summary(ticker)
@@ -63,18 +86,22 @@ def run_business_analysis(ticker):
     return query_gpt(prompt)
 
 def run_financial_analysis(ticker):
-    income, balance, cashflow, dividends = get_financials(ticker)
-    fcf = cashflow.loc['Total Cash From Operating Activities'] - cashflow.loc['Capital Expenditures']
+    income, balance, cashflow, dividends, fcf = get_financials(ticker)
     fin_df = pd.DataFrame({
-        'Revenue': income.loc['Total Revenue'],
-        'Net Income': income.loc['Net Income'],
-        'Operating Cash Flow': cashflow.loc['Total Cash From Operating Activities'],
-        'CapEx': cashflow.loc['Capital Expenditures'],
+        'Revenue': income.loc['Total Revenue'] if 'Total Revenue' in income.index else pd.Series([0]*4),
+        'Net Income': income.loc['Net Income'] if 'Net Income' in income.index else pd.Series([0]*4),
+        'Operating Cash Flow': cashflow.loc['Total Cash From Operating Activities'] if 'Total Cash From Operating Activities' in cashflow.index else pd.Series([0]*4),
+        'CapEx': cashflow.loc['Capital Expenditures'] if 'Capital Expenditures' in cashflow.index else pd.Series([0]*4),
         'Free Cash Flow': fcf,
-        'Dividends': dividends.groupby(dividends.index.year).sum()
+        'Dividends': dividends.groupby(dividends.index.year).sum() if not dividends.empty else pd.Series([0])
     })
     prompt = build_financial_prompt(fin_df)
-    return query_gpt(prompt), fin_df
+    return query_gpt(prompt), fin_df, fcf
+
+def run_dcf_analysis(fcf, wacc=8.0, terminal_growth=2.5):
+    fcf_forecast = fcf.head(5).fillna(0)
+    dcf_prompt = build_dcf_prompt(fcf_forecast, wacc, terminal_growth)
+    return query_gpt(dcf_prompt)
 
 def scrape_10k_summary(ticker):
     cik_lookup = requests.get(f'https://www.sec.gov/files/company_tickers.json').json()
@@ -98,10 +125,11 @@ def scrape_10k_summary(ticker):
     text = soup.get_text()
     return query_gpt(f"Summarize this 10-K filing:\n{text[:10000]}")  # Limit to first 10,000 characters
 
-def export_to_excel(business_analysis, financial_analysis, fin_df, ticker):
+def export_to_excel(business_analysis, financial_analysis, fin_df, dcf_result, ticker):
     with pd.ExcelWriter(f"{ticker}_equity_report.xlsx") as writer:
         pd.DataFrame({'Business Summary': [business_analysis]}).to_excel(writer, sheet_name="Business", index=False)
         pd.DataFrame({'Financial Analysis': [financial_analysis]}).to_excel(writer, sheet_name="Financials", index=False)
+        pd.DataFrame({'DCF Result': [dcf_result]}).to_excel(writer, sheet_name="Valuation", index=False)
         fin_df.to_excel(writer, sheet_name="Raw Data")
 
 # Streamlit App
@@ -110,15 +138,19 @@ ticker = st.text_input("Enter Ticker Symbol:", value="ACGL")
 if st.button("Run Analysis"):
     with st.spinner("Analyzing..."):
         business_analysis = run_business_analysis(ticker)
-        financial_analysis, fin_df = run_financial_analysis(ticker)
+        financial_analysis, fin_df, fcf_data = run_financial_analysis(ticker)
+        dcf_result = run_dcf_analysis(fcf_data)
         tenk_summary = scrape_10k_summary(ticker)
-        export_to_excel(business_analysis, financial_analysis, fin_df, ticker)
+        export_to_excel(business_analysis, financial_analysis, fin_df, dcf_result, ticker)
 
         st.subheader("Business Analysis")
         st.write(business_analysis)
 
         st.subheader("Financial Analysis")
         st.write(financial_analysis)
+
+        st.subheader("DCF Valuation")
+        st.write(dcf_result)
 
         st.subheader("10-K Summary")
         st.write(tenk_summary)
