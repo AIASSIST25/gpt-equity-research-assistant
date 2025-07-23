@@ -107,10 +107,10 @@ def run_dcf_analysis(fcf, wacc=8.0, terminal_growth=2.5):
     return query_gpt(dcf_prompt)
 
 def scrape_10k_summary(ticker):
-try:
+    try:
     resp = requests.get("https://www.sec.gov/files/company_tickers.json")
     cik_lookup = resp.json()
-except Exception as e:
+    except Exception as e:
     return f"Error retrieving CIK lookup from SEC: {e}"
     cik = None
     for record in cik_lookup.values():
