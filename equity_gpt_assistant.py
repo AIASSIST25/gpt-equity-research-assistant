@@ -108,12 +108,11 @@ def run_dcf_analysis(fcf, wacc=8.0, terminal_growth=2.5):
 
 def scrape_10k_summary(ticker):
     try:
-    resp = requests.get("https://www.sec.gov/files/company_tickers.json")
-    cik_lookup = resp.json()
+        resp = requests.get('https://www.sec.gov/files/company_tickers.json')
+        cik_lookup = resp.json()
     except Exception as e:
-    return f"Error retrieving CIK lookup from SEC: {e}"
+        return f"Error retrieving CIK lookup from SEC: {e}"
     cik = None
-    for record in cik_lookup.values():
         if record['ticker'].upper() == ticker.upper():
             cik = str(record['cik_str']).zfill(10)
             break
