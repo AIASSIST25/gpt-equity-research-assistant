@@ -122,7 +122,7 @@ def get_filing_summary(ticker):
         return "10-K link not available."
     filing_text = requests.get(filing_url).text
     soup = BeautifulSoup(filing_text, "html.parser")
-    return query_gpt(f"Summarize this 10-K filing:
+    return query_gpt(f"Summarize this 10-K filing:\n{soup.get_text()[:10000]}")
 {soup.get_text()[:10000]}")
 
 def export_to_excel(business_analysis, financial_analysis, fin_df, dcf_result, ticker):
