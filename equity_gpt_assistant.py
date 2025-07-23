@@ -108,16 +108,19 @@ def run_dcf_analysis(fcf, wacc=8.0, terminal_growth=2.5):
 
 def scrape_10k_summary(ticker):
     try:
-        resp = requests.get('https://www.sec.gov/files/company_tickers.json')
+        resp = requests.get("https://www.sec.gov/files/company_tickers.json")
         cik_lookup = resp.json()
     except Exception as e:
         return f"Error retrieving CIK lookup from SEC: {e}"
+
     cik = None
+    for record in cik_lookup.values():
         if record['ticker'].upper() == ticker.upper():
             cik = str(record['cik_str']).zfill(10)
             break
     if not cik:
         return "CIK not found."
+
     url = f"https://www.sec.gov/Archives/edgar/data/{cik}/index.json"
     index_data = requests.get(url).json()
     for file in index_data['directory']['item']:
@@ -126,6 +129,7 @@ def scrape_10k_summary(ticker):
             break
     else:
         return "10-K not found."
+
     filing = requests.get(doc_url).text
     soup = BeautifulSoup(filing, 'html.parser')
     text = soup.get_text()
