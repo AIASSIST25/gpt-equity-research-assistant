@@ -1,4 +1,5 @@
-# equity_gpt_assistant.py (FMP-only version)
+
+# equity_gpt_assistant.py (full financials + ratios version)
 from openai import OpenAI
 import pandas as pd
 import streamlit as st
@@ -32,36 +33,15 @@ def get_fmp_financials(ticker):
         r = requests.get(url)
         return r.json() if r.status_code == 200 else []
 
-    income_url = f"https://financialmodelingprep.com/api/v3/income-statement/{ticker}?limit=5&apikey={FMP_API_KEY}"
-    balance_url = f"https://financialmodelingprep.com/api/v3/balance-sheet-statement/{ticker}?limit=5&apikey={FMP_API_KEY}"
-    cashflow_url = f"https://financialmodelingprep.com/api/v3/cash-flow-statement/{ticker}?limit=5&apikey={FMP_API_KEY}"
-    dividend_url = f"https://financialmodelingprep.com/api/v3/historical-price-full/stock_dividend/{ticker}?apikey={FMP_API_KEY}"
-
-    income = fetch_json(income_url)
-    balance = fetch_json(balance_url)
-    cashflow = fetch_json(cashflow_url)
-    dividends = fetch_json(dividend_url)
-
+    income = fetch_json(f"https://financialmodelingprep.com/api/v3/income-statement/{ticker}?limit=5&apikey={FMP_API_KEY}")
+    balance = fetch_json(f"https://financialmodelingprep.com/api/v3/balance-sheet-statement/{ticker}?limit=5&apikey={FMP_API_KEY}")
+    cashflow = fetch_json(f"https://financialmodelingprep.com/api/v3/cash-flow-statement/{ticker}?limit=5&apikey={FMP_API_KEY}")
+    dividends = fetch_json(f"https://financialmodelingprep.com/api/v3/historical-price-full/stock_dividend/{ticker}?apikey={FMP_API_KEY}")
     return income, balance, cashflow, dividends
-
-def run_business_analysis(ticker):
-    summary = get_company_summary(ticker)
-    prompt = f"""
-You are an equity research analyst. Based on the company summary below, answer:
-
-1. What are the company’s main products/services?
-2. How does it make money?
-3. What are its key customer and geographic segments?
-4. Are there any major dependencies or risks?
-
-Company Summary:
-{summary}
-"""
-    return query_gpt(prompt)
 
 def run_financial_analysis(ticker):
     income, balance, cashflow, dividends = get_fmp_financials(ticker)
-    if not income or not cashflow:
+    if not income or not cashflow or not balance:
         return "Missing financial data", pd.DataFrame(), pd.Series([0])
 
     df = pd.DataFrame({
@@ -70,15 +50,28 @@ def run_financial_analysis(ticker):
         'Gross Profit': [i.get('grossProfit', 0) for i in income],
         'EBITDA': [i.get('ebitda', 0) for i in income],
         'Net Income': [i.get('netIncome', 0) for i in income],
-        'Operating Cash Flow': [c.get('operatingCashFlow', 0) for c in cashflow],
+        'Operating CF': [c.get('operatingCashFlow', 0) for c in cashflow],
         'CapEx': [c.get('capitalExpenditure', 0) for c in cashflow],
-        'Free Cash Flow': [c.get('operatingCashFlow', 0) - c.get('capitalExpenditure', 0) for c in cashflow]
+        'Free Cash Flow': [c.get('operatingCashFlow', 0) - c.get('capitalExpenditure', 0) for c in cashflow],
+        'Total Debt': [b.get('totalDebt', 0) for b in balance],
+        'Cash & Equiv': [b.get('cashAndCashEquivalents', 0) for b in balance],
+        'Total Assets': [b.get('totalAssets', 0) for b in balance],
+        'Total Equity': [b.get('totalStockholdersEquity', 0) for b in balance],
+        'Current Ratio': [b.get('totalCurrentAssets', 0) / b.get('totalCurrentLiabilities', 1) for b in balance]
     })
 
+    # Derived Ratios
+    df["Gross Margin"] = df["Gross Profit"] / df["Revenue"]
+    df["EBITDA Margin"] = df["EBITDA"] / df["Revenue"]
+    df["Net Margin"] = df["Net Income"] / df["Revenue"]
+    df["ROE"] = df["Net Income"] / df["Total Equity"].replace(0, 1)
+    df["ROA"] = df["Net Income"] / df["Total Assets"].replace(0, 1)
+    df["Debt/Equity"] = df["Total Debt"] / df["Total Equity"].replace(0, 1)
+
+    # Dividends
     div_df = pd.DataFrame(dividends.get("historical", []))
     div_df["year"] = pd.to_datetime(div_df["date"]).dt.year
     dividend_summary = div_df.groupby("year")["dividend"].sum()
-
     df["Dividends"] = df["Year"].astype(int).map(dividend_summary.to_dict()).fillna(0)
 
     prompt = f"""
@@ -86,20 +79,36 @@ You're reviewing historical financials for a company.
 
 Based on this data, answer:
 
-1. Revenue growth trend
-2. Margins (gross, EBITDA, net income)
-3. Free cash flow trends
-4. Dividend payment trend
-5. Debt and liquidity position
+1. Revenue and margin trends
+2. Free cash flow and CapEx stability
+3. Leverage and liquidity (Debt/Equity, Current Ratio)
+4. Dividend consistency and payout
 
 Financials:
 {df.to_string()}
 """
     return query_gpt(prompt), df, df["Free Cash Flow"]
 
+def run_business_analysis(ticker):
+    summary = get_company_summary(ticker)
+    if not summary or summary.strip() == "No summary available.":
+        return "Business summary not available."
+    prompt = f"""
+You are an equity research analyst. Based on the company summary below, answer:
+
+1. What are the company’s main products/services?
+2. How does it make money?
+3. Who are its customers and in which geographies does it operate?
+4. Are there any major risks or dependencies?
+
+Company Summary:
+{summary}
+"""
+    return query_gpt(prompt)
+
 def run_dcf_analysis(fcf, wacc=8.0, terminal_growth=2.5):
     fcf_forecast = fcf.head(5).fillna(0)
-    dcf_prompt = f"""
+    prompt = f"""
 You're performing a DCF valuation.
 
 Use the following Free Cash Flows, WACC of {wacc}%, and terminal growth rate of {terminal_growth}% to calculate:
@@ -110,31 +119,32 @@ Use the following Free Cash Flows, WACC of {wacc}%, and terminal growth rate of 
 Free Cash Flows:
 {fcf_forecast.to_string()}
 """
-    return query_gpt(dcf_prompt)
+    return query_gpt(prompt)
 
 def get_filing_summary(ticker):
     url = f"https://financialmodelingprep.com/api/v3/sec_filings/{ticker}?type=10-K&limit=1&apikey={FMP_API_KEY}"
     filings = requests.get(url).json()
-    if not filings:
-        return "No 10-K filings found."
     if isinstance(filings, list) and len(filings) > 0 and 'link' in filings[0]:
-        filing_url = filings[0]['link']
+        filing_url = filings[0]["link"]
     else:
-        return 'No valid 10-K filing found.'
-    if not filing_url:
-        return "10-K link not available."
-    filing_text = requests.get(filing_url).text
-    soup = BeautifulSoup(filing_text, "html.parser")
+        return "No valid 10-K filing found."
+
+    try:
+        filing_text = requests.get(filing_url).text
+        soup = BeautifulSoup(filing_text, "html.parser")
+        return query_gpt(f"Summarize this 10-K filing:\n{soup.get_text()[:10000]}")
+    except Exception as e:
+        return f"Error reading 10-K: {e}"
 
 def export_to_excel(business_analysis, financial_analysis, fin_df, dcf_result, ticker):
     with pd.ExcelWriter(f"{ticker}_equity_report.xlsx") as writer:
         pd.DataFrame({'Business Summary': [business_analysis]}).to_excel(writer, sheet_name="Business", index=False)
         pd.DataFrame({'Financial Analysis': [financial_analysis]}).to_excel(writer, sheet_name="Financials", index=False)
         pd.DataFrame({'DCF Result': [dcf_result]}).to_excel(writer, sheet_name="Valuation", index=False)
-        fin_df.to_excel(writer, sheet_name="Raw Data")
+        fin_df.to_excel(writer, sheet_name="Raw Data", index=False)
 
 # Streamlit App
-st.title("GPT-Powered Equity Research Assistant (FMP Edition)")
+st.title("GPT-Powered Equity Research Assistant (Full-Ratio Edition)")
 ticker = st.text_input("Enter Ticker Symbol:", value="AAPL")
 if st.button("Run Analysis"):
     with st.spinner("Running analysis..."):
