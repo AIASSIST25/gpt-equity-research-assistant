@@ -1,5 +1,5 @@
 
-# equity_gpt_assistant.py (full financials + ratios version)
+# Patched equity_gpt_assistant.py with fallback logic and partial financial support
 from openai import OpenAI
 import pandas as pd
 import streamlit as st
@@ -24,14 +24,21 @@ def query_gpt(prompt):
 def get_company_summary(ticker):
     url = f"https://financialmodelingprep.com/api/v3/profile/{ticker}?apikey={FMP_API_KEY}"
     response = requests.get(url)
-    if response.status_code == 200 and response.json():
-        return response.json()[0].get("description", "No summary available.")
-    return "No summary available."
+    try:
+        data = response.json()
+        if data and isinstance(data, list):
+            return data[0].get("description", "No summary available.")
+    except:
+        pass
+    return f"What does {ticker} do? Provide an investor-oriented summary."
 
 def get_fmp_financials(ticker):
     def fetch_json(url):
         r = requests.get(url)
-        return r.json() if r.status_code == 200 else []
+        try:
+            return r.json() if r.status_code == 200 else []
+        except:
+            return []
 
     income = fetch_json(f"https://financialmodelingprep.com/api/v3/income-statement/{ticker}?limit=5&apikey={FMP_API_KEY}")
     balance = fetch_json(f"https://financialmodelingprep.com/api/v3/balance-sheet-statement/{ticker}?limit=5&apikey={FMP_API_KEY}")
@@ -41,58 +48,60 @@ def get_fmp_financials(ticker):
 
 def run_financial_analysis(ticker):
     income, balance, cashflow, dividends = get_fmp_financials(ticker)
-    if not income or not cashflow or not balance:
+
+    if not any([income, balance, cashflow]):
         return "Missing financial data", pd.DataFrame(), pd.Series([0])
 
-    df = pd.DataFrame({
-        'Year': [i['calendarYear'] for i in income],
-        'Revenue': [i.get('revenue', 0) for i in income],
-        'Gross Profit': [i.get('grossProfit', 0) for i in income],
-        'EBITDA': [i.get('ebitda', 0) for i in income],
-        'Net Income': [i.get('netIncome', 0) for i in income],
-        'Operating CF': [c.get('operatingCashFlow', 0) for c in cashflow],
-        'CapEx': [c.get('capitalExpenditure', 0) for c in cashflow],
-        'Free Cash Flow': [c.get('operatingCashFlow', 0) - c.get('capitalExpenditure', 0) for c in cashflow],
-        'Total Debt': [b.get('totalDebt', 0) for b in balance],
-        'Cash & Equiv': [b.get('cashAndCashEquivalents', 0) for b in balance],
-        'Total Assets': [b.get('totalAssets', 0) for b in balance],
-        'Total Equity': [b.get('totalStockholdersEquity', 0) for b in balance],
-        'Current Ratio': [b.get('totalCurrentAssets', 0) / b.get('totalCurrentLiabilities', 1) for b in balance]
-    })
+    df = pd.DataFrame()
+    if income:
+        df["Year"] = [i['calendarYear'] for i in income]
+        df["Revenue"] = [i.get('revenue', 0) for i in income]
+        df["Gross Profit"] = [i.get('grossProfit', 0) for i in income]
+        df["EBITDA"] = [i.get('ebitda', 0) for i in income]
+        df["Net Income"] = [i.get('netIncome', 0) for i in income]
 
-    # Derived Ratios
-    df["Gross Margin"] = df["Gross Profit"] / df["Revenue"]
-    df["EBITDA Margin"] = df["EBITDA"] / df["Revenue"]
-    df["Net Margin"] = df["Net Income"] / df["Revenue"]
-    df["ROE"] = df["Net Income"] / df["Total Equity"].replace(0, 1)
-    df["ROA"] = df["Net Income"] / df["Total Assets"].replace(0, 1)
-    df["Debt/Equity"] = df["Total Debt"] / df["Total Equity"].replace(0, 1)
+    if cashflow:
+        df["Operating CF"] = [c.get('operatingCashFlow', 0) for c in cashflow]
+        df["CapEx"] = [c.get('capitalExpenditure', 0) for c in cashflow]
+        df["Free Cash Flow"] = df["Operating CF"] - df["CapEx"]
 
-    # Dividends
+    if balance:
+        df["Total Debt"] = [b.get('totalDebt', 0) for b in balance]
+        df["Cash & Equiv"] = [b.get('cashAndCashEquivalents', 0) for b in balance]
+        df["Total Assets"] = [b.get('totalAssets', 0) for b in balance]
+        df["Total Equity"] = [b.get('totalStockholdersEquity', 0) for b in balance]
+        df["Current Ratio"] = [b.get('totalCurrentAssets', 0) / b.get('totalCurrentLiabilities', 1) for b in balance]
+
+    if "Gross Profit" in df and "Revenue" in df:
+        df["Gross Margin"] = df["Gross Profit"] / df["Revenue"]
+    if "EBITDA" in df and "Revenue" in df:
+        df["EBITDA Margin"] = df["EBITDA"] / df["Revenue"]
+    if "Net Income" in df and "Revenue" in df:
+        df["Net Margin"] = df["Net Income"] / df["Revenue"]
+    if "Net Income" in df and "Total Equity" in df:
+        df["ROE"] = df["Net Income"] / df["Total Equity"].replace(0, 1)
+    if "Net Income" in df and "Total Assets" in df:
+        df["ROA"] = df["Net Income"] / df["Total Assets"].replace(0, 1)
+    if "Total Debt" in df and "Total Equity" in df:
+        df["Debt/Equity"] = df["Total Debt"] / df["Total Equity"].replace(0, 1)
+
     div_df = pd.DataFrame(dividends.get("historical", []))
-    div_df["year"] = pd.to_datetime(div_df["date"]).dt.year
-    dividend_summary = div_df.groupby("year")["dividend"].sum()
-    df["Dividends"] = df["Year"].astype(int).map(dividend_summary.to_dict()).fillna(0)
+    if not div_df.empty:
+        div_df["year"] = pd.to_datetime(div_df["date"]).dt.year
+        dividend_summary = div_df.groupby("year")["dividend"].sum()
+        df["Dividends"] = df["Year"].astype(int).map(dividend_summary.to_dict()).fillna(0)
 
     prompt = f"""
-You're reviewing historical financials for a company.
+You are reviewing historical financials.
 
-Based on this data, answer:
+Discuss revenue, margins, free cash flow, leverage and dividends based on:
 
-1. Revenue and margin trends
-2. Free cash flow and CapEx stability
-3. Leverage and liquidity (Debt/Equity, Current Ratio)
-4. Dividend consistency and payout
-
-Financials:
 {df.to_string()}
 """
-    return query_gpt(prompt), df, df["Free Cash Flow"]
+    return query_gpt(prompt), df, df.get("Free Cash Flow", pd.Series([0]))
 
 def run_business_analysis(ticker):
     summary = get_company_summary(ticker)
-    if not summary or summary.strip() == "No summary available.":
-        return "Business summary not available."
     prompt = f"""
 You are an equity research analyst. Based on the company summary below, answer:
 
@@ -107,25 +116,30 @@ Company Summary:
     return query_gpt(prompt)
 
 def run_dcf_analysis(fcf, wacc=8.0, terminal_growth=2.5):
-    fcf_forecast = fcf.head(5).fillna(0)
+    valid_fcf = fcf.dropna().head(5)
+    if valid_fcf.sum() == 0:
+        return "Free cash flow data missing — unable to run DCF."
+
     prompt = f"""
 You're performing a DCF valuation.
 
-Use the following Free Cash Flows, WACC of {wacc}%, and terminal growth rate of {terminal_growth}% to calculate:
-1. Enterprise value
-2. Equity value
-3. Implied share price
+Use these FCFs, WACC of {wacc}%, and terminal growth of {terminal_growth}% to estimate:
+
+- Enterprise Value
+- Equity Value
+- Share Price
 
 Free Cash Flows:
-{fcf_forecast.to_string()}
+{valid_fcf.to_string()}
 """
     return query_gpt(prompt)
 
 def get_filing_summary(ticker):
-    url = f"https://financialmodelingprep.com/api/v3/sec_filings/{ticker}?type=10-K&limit=1&apikey={FMP_API_KEY}"
+    url = f"https://financialmodelingprep.com/api/v3/sec_filings/{ticker}?limit=5&apikey={FMP_API_KEY}"
     filings = requests.get(url).json()
-    if isinstance(filings, list) and len(filings) > 0 and 'link' in filings[0]:
-        filing_url = filings[0]["link"]
+    valid = [f for f in filings if '10-K' in f.get('title', '').upper()]
+    if valid:
+        filing_url = valid[0].get("link", "")
     else:
         return "No valid 10-K filing found."
 
@@ -144,7 +158,7 @@ def export_to_excel(business_analysis, financial_analysis, fin_df, dcf_result, t
         fin_df.to_excel(writer, sheet_name="Raw Data", index=False)
 
 # Streamlit App
-st.title("GPT-Powered Equity Research Assistant (Full-Ratio Edition)")
+st.title("GPT-Powered Equity Research Assistant (Resilient Edition)")
 ticker = st.text_input("Enter Ticker Symbol:", value="AAPL")
 if st.button("Run Analysis"):
     with st.spinner("Running analysis..."):
