@@ -117,7 +117,10 @@ def get_filing_summary(ticker):
     filings = requests.get(url).json()
     if not filings:
         return "No 10-K filings found."
-    filing_url = filings[0].get("link", "")
+    if isinstance(filings, list) and len(filings) > 0 and "link" in filings[0]:
+    filing_url = filings[0]["link"]
+    else:
+    return "No valid 10-K filing found."
     if not filing_url:
         return "10-K link not available."
     filing_text = requests.get(filing_url).text
